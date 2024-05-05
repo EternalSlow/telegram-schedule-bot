@@ -2,7 +2,6 @@ import json
 from config import bot_config
 import datetime
 from os import path as osPath
-# Telegram api
 import telebot
 from telebot import types
 
@@ -27,15 +26,12 @@ def load(filename:str) -> dict:
             result = {}
     return result
 
-# refactored save and load
-
 try:
     Notes = load("notes")
 except FileNotFoundError:
     Notes = {}
     open(osPath.join(JSON_FOLDER,file_names["notes"]),"x")
 Schedule = load("schedule")
-# here and everywhere else, those two files are no longer loading EVERY time from file
 
 week = {
     0: "Понедельник",
@@ -69,20 +65,27 @@ class Bot():
 
         self.bot = telebot.TeleBot(token)
         self.states = { 
-            "create":{},
+            "create":{"12414515":True},
             "edit":{},
             "delete":{},
             "read":{},
         }
         self.methods = [func for attr in dir(self) if callable(func:=getattr(self, attr)) and not attr.startswith("__") ]
         self.pure_handlers = [method for method in self.methods if method.__doc__ and not("helper" in method.__doc__ or "handle" in method.__name__)]
-        [self.bot.register_message_handler(method,commands=[method.__name__]) for method in self.pure_handlers]   
+        [self.bot.register_message_handler(method,commands=[method.__name__]) for method in self.pure_handlers]
         self.state_handlers = [method for method in self.methods if method.__name__.endswith("handler")]
-        [self.bot.register_message_handler(method,func=lambda message:self.states[method.__doc__].get(message.chat.id,False)) for method in self.state_handlers]
+        funcs = [lambda message,method=method:self.states[method.__doc__].get(message.chat.id,False) for method in self.state_handlers]
+        [self.bot.register_message_handler(method,func=func) for func,method in zip(funcs,self.state_handlers)]
         self.callback_func_dict = {k:v for k,v in zip([method.__name__ for method in self.pure_handlers],self.pure_handlers)}
         self.bot.register_callback_query_handler(self.handle_callback_query,func=lambda call: True)
 
         self.bot.infinity_polling()
+    def clear_states(self,ID):
+        for key in self.states:
+            self.states[key][ID] = False
+    def change_state(self,state_key:str,ID,value:bool):
+        self.clear_states(ID)
+        self.states[state_key][ID] = value
     def start(self,message):
         "start"
         markup = types.InlineKeyboardMarkup(row_width=3)
@@ -99,22 +102,22 @@ class Bot():
     def create_note(self,message):
         "create note"
         self.bot.send_message(message.chat.id, PROMPTS["create"])
-        self.states["create"][message.chat.id] = True
+        self.change_state("create",message.chat.id,True)
 
     def edit_note(self,message):
         "edit note"
         self.bot.send_message(message.chat.id, PROMPTS["edit"])
-        self.states["edit"][message.chat.id] = True
+        self.change_state("edit",message.chat.id,True)
 
     def delete_note(self,message):
         "delete note"
         self.bot.send_message(message.chat.id, PROMPTS["delete"])
-        self.states["delete"][message.chat.id] = True
+        self.change_state("delete",message.chat.id,True)
 
     def read_note(self,message):
         "read note"
         self.bot.send_message(message.chat.id, PROMPTS["read"])
-        self.states["read"][message.chat.id] = True
+        self.change_state("read",message.chat.id,True)
 
     def list_note(self,message):
         "list note"
@@ -125,7 +128,7 @@ class Bot():
         "change week parity"
         Schedule[2] = int(not Schedule[2]) # 0 -> 1 ; 1 -> 0
         save("schedule", Schedule)
-        self.bot.send_message(message.chat.id, PROMPTS["change_parity"]) # parity complite -> parity changed
+        self.bot.send_message(message.chat.id, PROMPTS["change_parity"])
 
     def schedule(self,message):
         "schedule"
@@ -142,7 +145,6 @@ class Bot():
         if week[today] == fri:
             Schedule_output += PROMPTS["schedule_monday"] + "\n\n" + day_Schedule(week[0],not week_parity)
         self.bot.send_message(message.chat.id, Schedule_output)
-        # total refactoring, god was it awful before
 
     # handlers
         
@@ -157,11 +159,9 @@ class Bot():
         else:
             result = PROMPTS['failure_create']
         self.bot.send_message(message.chat.id, result)
-        # moved out of branches
 
-    def edit_handler(self,message): #edite_handler -> edit_handler
+    def edit_handler(self,message):
         "edit"
-        # Эта функция нужна для создания заметок. Учитывайте что он записывает словарь!
         result = PROMPTS["failure_edit"]
         if "@" in message.text:
             name, text = message.text.split('@')
@@ -171,7 +171,6 @@ class Bot():
                 result = PROMPTS["success_edit"]
                 self.states["edit"][message.chat.id] = False 
         self.bot.send_message(message.chat.id, result)
-        # moved stuff out of branches
 
     def delete_handler(self,message):
         "delete"
@@ -184,14 +183,12 @@ class Bot():
         else:
             result = PROMPTS["failure_delete"]
         self.bot.send_message(message.chat.id, result)
-        # moved stuff out of branches
 
-    def read_handler(self,message): # watch_handler -> read_handler
+    def read_handler(self,message):
         "read"
         name = message.text
         self.bot.send_message(message.chat.id, Notes[name] if name in Notes else PROMPTS["failure_read"]) 
         self.states["read"][message.chat.id] = False
-        # refactored a little
     
     # callbacks
         
@@ -230,7 +227,6 @@ help_descriptions = {
 method_list = [func.__name__ for attr in dir(Bot) if callable(func:=getattr(Bot, attr)) and not attr.startswith("__") and func.__doc__ and not("helper" in func.__doc__ or "handle" in func.__name__) ]
 PROMPTS["help"] = PROMPTS["help"]+" \n/".join([f"{string} \n({{{string}}})\n" for string in method_list])
 PROMPTS["help"] = PROMPTS["help"].format(**help_descriptions)
-# I just like to do something like this:
 if __name__ == "__main__": 
     try:
         Bot(bot_config["Token"])
