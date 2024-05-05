@@ -21,11 +21,19 @@ def save(filename:str, text:str):
 def load(filename:str) -> dict:
     path = osPath.join(JSON_FOLDER,file_names[filename])
     with open(path, "r",encoding="utf-8") as file:
-        result = json.load(file)
+        try:result = json.load(file)
+        except json.JSONDecodeError as e:
+            print(str(e))
+            result = {}
     return result
+
 # refactored save and load
 
-Notes = load("notes")
+try:
+    Notes = load("notes")
+except FileNotFoundError:
+    Notes = {}
+    open(osPath.join(JSON_FOLDER,file_names["notes"]),"x")
 Schedule = load("schedule")
 # here and everywhere else, those two files are no longer loading EVERY time from file
 
@@ -42,17 +50,7 @@ class Bot():
     def __init__(self,token) -> None:
 
         """
-        I refactored this entire bot to be a class. 
-        
         To add new handlers - write new method with a doc string
-        (
-        doc string is a string, that appears right after function declaration.
-        like this:
-
-        def func():
-            'THIS IS A DOC STRING'
-
-        )
 
         For a 'pure handler' (one which doesn't use states), 
         doc string will be used as a text on the InlineKeyboardButton
@@ -74,23 +72,24 @@ class Bot():
             "create":{},
             "edit":{},
             "delete":{},
-            "read":{}
+            "read":{},
         }
         self.methods = [func for attr in dir(self) if callable(func:=getattr(self, attr)) and not attr.startswith("__") ]
-        self.pure_handlers = [self.bot.message_handler(commands=[method.__name__])(method) for method in self.methods if method.__doc__ and not("help" in method.__doc__ or "handle" in method.__name__)]
-        self.state_handlers = [self.bot.message_handler(func=lambda message:self.states[method.__doc__].get(message.chat.id,False))(method) for method in self.methods if method.__name__.endswith("handler")]
+        self.pure_handlers = [method for method in self.methods if method.__doc__ and not("helper" in method.__doc__ or "handle" in method.__name__)]
+        [self.bot.register_message_handler(method,commands=[method.__name__]) for method in self.pure_handlers]   
+        self.state_handlers = [method for method in self.methods if method.__name__.endswith("handler")]
+        [self.bot.register_message_handler(method,func=lambda message:self.states[method.__doc__].get(message.chat.id,False)) for method in self.state_handlers]
         self.callback_func_dict = {k:v for k,v in zip([method.__name__ for method in self.pure_handlers],self.pure_handlers)}
-        self.bot.callback_query_handler(func=lambda call: True)(self.handle_callback_query)
+        self.bot.register_callback_query_handler(self.handle_callback_query,func=lambda call: True)
 
-    def run(self):
         self.bot.infinity_polling()
-
     def start(self,message):
+        "start"
         markup = types.InlineKeyboardMarkup(row_width=3)
         text_list = [method.__doc__ for method in self.pure_handlers] # all texts
         callback_list = [method.__name__ for method in self.pure_handlers] # all callbacks
         # create a list of inline keyboard buttons for each text and callback, then unpack it as arguments for markup.add
-        markup.add(*[types.InlineKeyboardButton(text,callback) for text,callback in zip(text_list,callback_list)])
+        markup.add(*[types.InlineKeyboardButton(text,callback_data=callback) for text,callback in zip(text_list,callback_list)])
         self.bot.send_message(message.chat.id, PROMPTS["start"], reply_markup=markup)
 
     def help(self,message):
@@ -132,9 +131,10 @@ class Bot():
         "schedule"
         fri,sat,sun = week[4],week[5],week[6]
         week_parity = int(not Schedule[2]) # 0 -> 1 ; 1 -> 0
-        day_Schedule = lambda day,parity=week_parity: "\n".join([" | ".join(lesson) for lesson in Schedule[parity][week[day]]])
+        day_Schedule = lambda day,parity=week_parity: "\n".join([" | ".join(lesson) for lesson in Schedule[parity][day]])
         if week[today] in [sat,sun]:
-            Schedule_output += PROMPTS["schedule_monday"] + "\n\n" + day_Schedule(week[0],not week_parity)
+            Schedule_output = PROMPTS["schedule_monday"] 
+            Schedule_output += "\n\n" + day_Schedule(week[0],not week_parity)
             self.bot.send_message(message.chat.id, Schedule_output)
             return
         Schedule_output = PROMPTS["schedule_today"] + "\n\n"
@@ -169,27 +169,27 @@ class Bot():
                 Notes[name] = text
                 save("notes",Notes)
                 result = PROMPTS["success_edit"]
+                self.states["edit"][message.chat.id] = False 
         self.bot.send_message(message.chat.id, result)
-        self.states["edit"][message.chat.id] = False 
         # moved stuff out of branches
 
     def delete_handler(self,message):
         "delete"
         name = message.text
         if name in Notes:
-            Notes.remove(name) #pop -> remove
+            Notes.pop(name) 
             result = PROMPTS["success_delete"]
             save("notes",Notes)
+            self.states["delete"][message.chat.id] = False
         else:
             result = PROMPTS["failure_delete"]
         self.bot.send_message(message.chat.id, result)
-        self.states["delete"][message.chat.id] = False
         # moved stuff out of branches
 
     def read_handler(self,message): # watch_handler -> read_handler
         "read"
         name = message.text
-        self.bot.send_message(message.chat.id, Notes[name] if name in Notes else PROMPTS["failure_read"]) # "Вы написали неправильно название заметки." -> "Неправильное название заметки."
+        self.bot.send_message(message.chat.id, Notes[name] if name in Notes else PROMPTS["failure_read"]) 
         self.states["read"][message.chat.id] = False
         # refactored a little
     
@@ -200,7 +200,7 @@ class Bot():
 
 PROMPTS = {
     "start":'Привет, этот бот был создан для просмотра расписания и создание заметок. (Примечание заметки не имеют возможности хранить фото)',
-    "help":"Commands for bot: \n/" + " ({})\n/".join([func.__name__ for attr in dir(Bot) if callable(func:=getattr(Bot, attr)) and not attr.startswith("__") and func.__doc__ and not("help" in func.__doc__ or "handle" in func.__name__) ]),
+    "help":"Commands for bot: \n/",
     "create":"Напишите название и укажите '@' в конце названия новой заметки. После знака собаки все написанное будет записанно в заметку это должно выглядеть так:\n 'Название@Заметка.'",
     "edit":"Напишите название заметки. После написание название напишите @ после которого можно написать новое содержание заметки.",
     "delete":"Напишите название заметки для того чтобы удалить заметку.",
@@ -216,18 +216,22 @@ PROMPTS = {
     "failure_delete":"Вы написали неправильно название заметки.",
     "failure_read":"Неправильное название заметки.",
 }
-help_descriptions = (
-    "Для того чтобы увидеть рассписание на сегодня и на завтра",
-    "для создание заметки нужно следовать такой конструкции 'название@заметка'",
-    "Показывает все note в виде списка в котором можно выбрать заметку для отображени.",
-    "После написание команды нужно написать 'название@измененная заметка'",
-    "для удаление заметки вам нужно после ввода команды написать название заметки",
-    "после ввода нужно написать название заметки"
-)
-PROMPTS["help"] = PROMPTS["help"].format(*help_descriptions)
+help_descriptions = {
+    "help":"Отобразить эту помощь",
+    "schedule":"Для того чтобы увидеть расписание на сегодня и на завтра",
+    "create_note":"для создание заметки нужно следовать такой конструкции 'название@заметка'",
+    "list_note":"Показывает все note в виде списка в котором можно выбрать заметку для отображения.",
+    "edit_note":"После написание команды нужно написать 'название@измененная заметка'",
+    "delete_note":"Для удаления заметки вам нужно после ввода команды написать название заметки",
+    "read_note":"после ввода нужно написать название заметки",
+    "change_week_parity":"В случае изменения чётности недель - изменить чётность недели",
+    "start":"Отобразить функциональные кнопки"
+}
+method_list = [func.__name__ for attr in dir(Bot) if callable(func:=getattr(Bot, attr)) and not attr.startswith("__") and func.__doc__ and not("helper" in func.__doc__ or "handle" in func.__name__) ]
+PROMPTS["help"] = PROMPTS["help"]+" \n/".join([f"{string} \n({{{string}}})\n" for string in method_list])
+PROMPTS["help"] = PROMPTS["help"].format(**help_descriptions)
 # I just like to do something like this:
 if __name__ == "__main__": 
-    bot = Bot()
     try:
-        bot.run()
+        Bot(bot_config["Token"])
     except KeyboardInterrupt:quit()
